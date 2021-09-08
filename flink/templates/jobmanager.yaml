@@ -44,7 +44,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
     {{- end }}
-      serviceAccount: {{ include "jobmanager.serviceAccount" . }}
+      serviceAccountName: {{ include "jobmanager.serviceAccount" . }}
+      securityContext:
+        {{ toYaml .Values.securityContext | indent 8 }}
       initContainers:
       {{- range $ct, $params := .Values.jobmanager.initContainers }}
         - name: {{ $ct }}
@@ -75,6 +77,11 @@ spec:
           {{- end }}
           {{- if .Values.jobmanager.extraEnvs }}
           {{- toYaml .Values.jobmanager.extraEnvs | nindent 12 }}
+          {{- end }}
+          envFrom:
+          {{- if and .Values.secrets.bitnamiSealedSecrets.enabled .Values.secrets.bitnamiSealedSecrets.sealedSecretEnvs }}
+            - secretRef:
+                name: {{ .Release.Name }}-secretenvs
           {{- end }}
           ports:
           {{- range $name, $port := .Values.jobmanager.ports }}
@@ -111,6 +118,9 @@ spec:
               mountPath: {{ .Values.flink.workDir }}/conf/log4j.properties
               subPath: log4j.properties
             - name: flink-config-volume
+              mountPath: {{ .Values.flink.workDir }}/conf/log4j-console.properties
+              subPath: log4j.properties
+            - name: flink-config-volume
               mountPath: {{ .Values.flink.workDir }}/conf/security.properties
               subPath: security.properties
               {{- if .Values.jobmanager.highAvailability.enabled }}
@@ -118,9 +128,32 @@ spec:
               mountPath: {{ .Values.flink.workDir }}/conf/masters
               subPath: masters
               {{- end }}
+          {{- range $secret := .Values.secrets.kubernetesSecrets }}
+            {{- if $secret.mountPath }}
+              {{- if $secret.keys }}
+                {{- range $key := $secret.keys }}
+            - name: {{ include "flink.fullname" $ }}-{{ $secret.name }}
+              mountPath: {{ $secret.mountPath }}/{{ $key }}
+              subPath: {{ $key }}
+              readOnly: true
+                {{- end }}
+              {{- else }}
+            - name: {{ include "flink.fullname" $ }}-{{ $secret.name }}
+              mountPath: {{ $secret.mountPath }}
+              readOnly: true
+              {{- end }}
+            {{- end }}
+          {{- end }}
+          {{- if .Values.jobmanager.extraVolumeMounts -}}
+            {{ toYaml .Values.jobmanager.extraVolumeMounts | nindent 12 }}
+          {{- end }}
           {{- if and .Values.jobmanager.persistent.enabled .Values.jobmanager.statefulset }}
             - name: jobmanager-data
               mountPath: {{ .Values.jobmanager.persistent.mountPath }}
+          {{- end }}
+          {{- if and (and .Values.secrets.bitnamiSealedSecrets.enabled .Values.secrets.bitnamiSealedSecrets.sealedSecretFiles) .Values.secrets.bitnamiSealedSecrets.sealedSecretFilesPath }}
+            - name: sealed-secret-files
+              mountPath: {{ .Values.secrets.bitnamiSealedSecrets.sealedSecretFilesPath }}
           {{- end }}
           resources:
             {{- toYaml .Values.jobmanager.resources | nindent 12 }}
@@ -140,6 +173,19 @@ spec:
               - key: masters
                 path: masters
               {{- end }}
+      {{- range .Values.secrets.kubernetesSecrets }}
+        - name: {{ include "flink.fullname" $ }}-{{ .name }}
+          secret:
+            secretName: {{ .name }}
+      {{- end }}
+      {{- if .Values.jobmanager.extraVolumes -}}
+        {{ toYaml .Values.jobmanager.extraVolumes | nindent 8 }}
+      {{- end }}
+      {{- if and (and .Values.secrets.bitnamiSealedSecrets.enabled .Values.secrets.bitnamiSealedSecrets.sealedSecretFiles) .Values.secrets.bitnamiSealedSecrets.sealedSecretFilesPath }}
+        - name: sealed-secret-files
+          secret:
+            secretName: {{ .Release.Name }}-secretfiles
+      {{- end }}
 
       {{- with .Values.jobmanager.nodeSelector }}
       nodeSelector:
@@ -157,13 +203,14 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: jobmanager-data
-        annotations:
-          volume.alpha.kubernetes.io/storage-class: {{ .Values.jobmanager.persistent.storageClass }}
         labels:
 {{ include "flink.labels" . | indent 10 }}
       spec:
         accessModes:
           - ReadWriteOnce
+        {{- if eq (kindIs "invalid" .Values.jobmanager.persistent.storageClass) false }}
+        storageClassName: {{ .Values.jobmanager.persistent.storageClass | quote }}
+        {{- end }}
         resources:
           requests:
             storage: {{ .Values.jobmanager.persistent.size }}

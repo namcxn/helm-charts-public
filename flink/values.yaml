@@ -7,28 +7,69 @@ fullnameOverride: ""
 
 image:
   repository: flink
-  tag: 1.10.0-scala_2.12
+  tag: 1.11.2-scala_2.12
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
+# Pod Security Context
+# ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+securityContext: {}
+# securityContext:
+#   fsGroup: 1000
+#   runAsUser: 1000
+#   runAsNonRoot: true
+
 # For general configuration
 flink:
-  # logging
+  # logging, log4j configuration copied from Flink distribution
   logging:
     log4j_properties: |+
-      log4j.rootLogger=INFO, file
-      log4j.logger.akka=WARN
-      log4j.logger.org.apache.kafka=WARN
-      log4j.logger.org.apache.kafka.clients.producer.ProducerConfig=WARN
-      log4j.logger.org.apache.kafka.clients.consumer.ConsumerConfig=WARN
-      log4j.logger.org.apache.hadoop=INFO
-      log4j.logger.org.apache.zookeeper=INFO
-      log4j.appender.file=org.apache.log4j.FileAppender
-      log4j.appender.file.file=${log.file}
-      log4j.appender.file.layout=org.apache.log4j.PatternLayout
-      log4j.appender.file.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p %-60c %x - %m%n
-      log4j.logger.org.apache.flink.shaded.akka.org.jboss.netty.channel.DefaultChannelPipeline=ERROR, file
-    # monitoring is exporting metrics in Prometheus format
+      # This affects logging for both user code and Flink
+      rootLogger.level = INFO
+      rootLogger.appenderRef.console.ref = ConsoleAppender
+      rootLogger.appenderRef.rolling.ref = RollingFileAppender
+      
+      # Uncomment this if you want to _only_ change Flink's logging
+      #logger.flink.name = org.apache.flink
+      #logger.flink.level = INFO
+      
+      # The following lines keep the log level of common libraries/connectors on
+      # log level INFO. The root logger does not override this. You have to manually
+      # change the log levels here.
+      logger.akka.name = akka
+      logger.akka.level = INFO
+      logger.kafka.name= org.apache.kafka
+      logger.kafka.level = INFO
+      logger.hadoop.name = org.apache.hadoop
+      logger.hadoop.level = INFO
+      logger.zookeeper.name = org.apache.zookeeper
+      logger.zookeeper.level = INFO
+      
+      # Log all infos to the console
+      appender.console.name = ConsoleAppender
+      appender.console.type = CONSOLE
+      appender.console.layout.type = PatternLayout
+      appender.console.layout.pattern = %d{yyyy-MM-dd HH:mm:ss,SSS} %-5p %-60c %x - %m%n
+      
+      # Log all infos in the given rolling file
+      appender.rolling.name = RollingFileAppender
+      appender.rolling.type = RollingFile
+      appender.rolling.append = false
+      appender.rolling.fileName = ${sys:log.file}
+      appender.rolling.filePattern = ${sys:log.file}.%i
+      appender.rolling.layout.type = PatternLayout
+      appender.rolling.layout.pattern = %d{yyyy-MM-dd HH:mm:ss,SSS} %-5p %-60c %x - %m%n
+      appender.rolling.policies.type = Policies
+      appender.rolling.policies.size.type = SizeBasedTriggeringPolicy
+      appender.rolling.policies.size.size=100MB
+      appender.rolling.strategy.type = DefaultRolloverStrategy
+      appender.rolling.strategy.max = 10
+      
+      # Suppress the irrelevant (wrong) warnings from the Netty channel handler
+      logger.netty.name = org.apache.flink.shaded.akka.org.jboss.netty.channel.DefaultChannelPipeline
+      logger.netty.level = OFF
+
+  # monitoring is exporting metrics in Prometheus format
   monitoring:
     enabled: true
     # port for metrics
@@ -112,13 +153,7 @@ jobmanager:
     command: >-
       sed 's/REPLACE_HOSTNAME/'${FLINK_POD_IP}'/'
       $FLINK_HOME/conf/flink-conf.yaml.tpl > $FLINK_HOME/conf/flink-conf.yaml &&
-      $FLINK_HOME/bin/jobmanager.sh start;
-      while :;
-      do
-      if [[ -f $(find log -name '*jobmanager*.log' -print -quit) ]];
-      then tail -f -n +1 log/*jobmanager*.log;
-      fi;
-      done
+      $FLINK_HOME/bin/jobmanager.sh start-foreground;
   # Additional param for JVM to support security.properties override
   # check configMap for more information
   jvmArgs: "-Djava.security.properties={{ .Values.flink.workDir }}/conf/security.properties"
@@ -140,8 +175,7 @@ jobmanager:
   #      cpu: 3800m
   #      memory: 8000Mi
   additionalCommand: >-
-    cp /opt/flink/opt/flink-metrics-prometheus-*.jar
-    /opt/flink/opt/flink-s3-fs-presto-*.jar
+    cp /opt/flink/opt/flink-s3-fs-presto-*.jar
     /opt/flink/lib/ &&
     wget https://repo1.maven.org/maven2/com/github/oshi/oshi-core/3.4.0/oshi-core-3.4.0.jar
     -O /opt/flink/lib/oshi-core-3.4.0.jar &&
@@ -151,13 +185,7 @@ jobmanager:
     -O /opt/flink/lib/jna-platform-5.4.0.jar
   command: >-
     cp $FLINK_HOME/conf/flink-conf.yaml.tpl $FLINK_HOME/conf/flink-conf.yaml &&
-    $FLINK_HOME/bin/jobmanager.sh start;
-    while :;
-    do
-    if [[ -f $(find log -name '*jobmanager*.log' -print -quit) ]];
-    then tail -f -n +1 log/*jobmanager*.log;
-    fi;
-    done
+    $FLINK_HOME/bin/jobmanager.sh start-foreground;
   service:
     type: ClusterIP
     annotations: {}
@@ -173,6 +201,7 @@ jobmanager:
   tolerations: []
   persistent:
     enabled: false
+    # https://kubernetes.io/docs/concepts/storage/persistent-volumes/#class-1
     storageClass:
     size: 8Gi
     mountPath: "/flink_state"
@@ -186,6 +215,7 @@ jobmanager:
     # The name of the ServiceAccount to use.
     # If not set and create is true, a name is generated using the fullname template
     name:
+    annotations: {}
   #livenessProbe will conduct checks for rpc port as tcpSocket probe
   livenessProbe:
     initialDelaySeconds: 10
@@ -216,8 +246,7 @@ taskmanager:
   #      cpu: 3800m
   #      memory: 8000Mi
   additionalCommand: >-
-    cp /opt/flink/opt/flink-metrics-prometheus-*.jar
-    /opt/flink/opt/flink-s3-fs-presto-*.jar
+    cp /opt/flink/opt/flink-s3-fs-presto-*.jar
     /opt/flink/lib/ &&
     wget https://repo1.maven.org/maven2/com/github/oshi/oshi-core/3.4.0/oshi-core-3.4.0.jar
     -O /opt/flink/lib/oshi-core-3.4.0.jar &&
@@ -226,13 +255,7 @@ taskmanager:
     wget https://repo1.maven.org/maven2/net/java/dev/jna/jna-platform/5.4.0/jna-platform-5.4.0.jar
     -O /opt/flink/lib/jna-platform-5.4.0.jar
   command: >-
-    $FLINK_HOME/bin/taskmanager.sh start;
-    while :;
-    do
-    if [[ -f $(find log -name '*taskmanager*.log' -print -quit) ]];
-    then tail -f -n +1 log/*taskmanager*.log;
-    fi;
-    done
+    $FLINK_HOME/bin/taskmanager.sh start-foreground;
   service:
     type: ClusterIP
   nodeSelector: {}
@@ -240,6 +263,7 @@ taskmanager:
   tolerations: []
   persistent:
     enabled: false
+    # https://kubernetes.io/docs/concepts/storage/persistent-volumes/#class-1
     storageClass:
     size: 8Gi
     mountPath: "/flink_state"
@@ -252,6 +276,7 @@ taskmanager:
     # The name of the ServiceAccount to use.
     # If not set and create is true, a name is generated using the fullname template
     name:
+    annotations: {}
   #livenessProbe will conduct checks for rpc port as tcpSocket probe
   livenessProbe:
     initialDelaySeconds: 30
@@ -287,3 +312,26 @@ zookeeper:
       memory: 1256Mi
   persistence:
     enabled: true
+
+secrets:
+#  Plain predefined secrets example
+#  kubernetesSecrets:
+#    - name: kerberos
+#      mountPath: /kerberos
+  bitnamiSealedSecrets:
+    enabled: false
+    # The encrypted raw file sealed secrets generated for example with
+    # kubeseal --raw --from-file=... --controller-name sealed-secrets --scope namespace-wide
+    sealedSecretFiles: {}
+    # file1: encypted_file1
+    # file2: encypted_file2
+    sealedSecretFilesPath: /etc/sealed
+    sealedSecretFilesAnnotations:
+      sealedsecrets.bitnami.com/namespace-wide: true
+    # The encrypted raw env sealed secrets generated for example with
+    # echo -n password | kubeseal --raw --from-file=/dev/stdin --controller-name sealed-secrets --scope namespace-wide
+    sealedSecretEnvs: {}
+    # env1: encypted_env1
+    # env2: encypted_env2
+    sealedSecretEnvsAnnotations:
+      sealedsecrets.bitnami.com/namespace-wide: true

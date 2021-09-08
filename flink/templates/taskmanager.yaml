@@ -44,7 +44,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
     {{- end }}
-      serviceAccount: {{ include "taskmanager.serviceAccount" . }}
+      serviceAccountName: {{ include "taskmanager.serviceAccount" . }}
+      securityContext:
+        {{ toYaml .Values.securityContext | indent 8 }}
       initContainers:
       {{- range $ct, $params := .Values.taskmanager.initContainers }}
         - name: {{ $ct }}
@@ -72,6 +74,11 @@ spec:
           {{- if .Values.jobmanager.extraEnvs }}
           {{- toYaml .Values.taskmanager.extraEnvs | nindent 12 }}
           {{- end }}
+          envFrom:
+          {{- if and .Values.secrets.bitnamiSealedSecrets.enabled .Values.secrets.bitnamiSealedSecrets.sealedSecretEnvs }}
+            - secretRef:
+                name: {{ .Release.Name }}-secretenvs
+          {{- end }}
           ports:
           {{- range $name, $port := .Values.taskmanager.ports }}
             - containerPort: {{ $port }}
@@ -93,6 +100,29 @@ spec:
             - name: taskmanager-data
               mountPath: {{ .Values.taskmanager.persistent.mountPath }}
           {{- end }}
+          {{- range $secret := .Values.secrets.kubernetesSecrets }}
+            {{- if $secret.mountPath }}
+              {{- if $secret.keys }}
+                {{- range $key := $secret.keys }}
+            - name: {{ include "flink.fullname" $ }}-{{ $secret.name }}
+              mountPath: {{ $secret.mountPath }}/{{ $key }}
+              subPath: {{ $key }}
+              readOnly: true
+                {{- end }}
+              {{- else }}
+            - name: {{ include "flink.fullname" $ }}-{{ $secret.name }}
+              mountPath: {{ $secret.mountPath }}
+              readOnly: true
+              {{- end }}
+            {{- end }}
+          {{- end }}
+          {{- if .Values.taskmanager.extraVolumeMounts -}}
+            {{ toYaml .Values.taskmanager.extraVolumeMounts | nindent 12 }}
+          {{- end }}
+          {{- if and (and .Values.secrets.bitnamiSealedSecrets.enabled .Values.secrets.bitnamiSealedSecrets.sealedSecretFiles) .Values.secrets.bitnamiSealedSecrets.sealedSecretFilesPath }}
+            - name: sealed-secret-files
+              mountPath: {{ .Values.secrets.bitnamiSealedSecrets.sealedSecretFilesPath }}
+          {{- end }}
           resources:
             {{- toYaml .Values.taskmanager.resources | nindent 12 }}
 
@@ -105,12 +135,27 @@ spec:
                 path: flink-conf.yaml
               - key: log4j.properties
                 path: log4j.properties
+              - key: log4j.properties
+                path: log4j-console.properties
               - key: security.properties
                 path: security.properties
               {{- if .Values.jobmanager.highAvailability.enabled }}
               - key: masters
                 path: masters
               {{- end }}
+      {{- range .Values.secrets.kubernetesSecrets }}
+        - name: {{ include "flink.fullname" $ }}-{{ .name }}
+          secret:
+            secretName: {{ .name }}
+      {{- end }}
+      {{- if .Values.taskmanager.extraVolumes -}}
+        {{ toYaml .Values.taskmanager.extraVolumes | nindent 8 }}
+      {{- end }}
+      {{- if and (and .Values.secrets.bitnamiSealedSecrets.enabled .Values.secrets.bitnamiSealedSecrets.sealedSecretFiles) .Values.secrets.bitnamiSealedSecrets.sealedSecretFilesPath }}
+        - name: sealed-secret-files
+          secret:
+            secretName: {{ .Release.Name }}-secretfiles
+      {{- end }}
 
       {{- with .Values.taskmanager.nodeSelector }}
       nodeSelector:
@@ -133,6 +178,9 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
+        {{- if eq (kindIs "invalid" .Values.taskmanager.persistent.storageClass) false }}
+        storageClassName: {{ .Values.taskmanager.persistent.storageClass | quote }}
+        {{- end }}
         resources:
           requests:
             storage: {{ .Values.taskmanager.persistent.size | quote }}
